@@ -1,7 +1,6 @@
 import httpx
 from enum import StrEnum
 from typing import Any
-from pydantic import BaseModel
 
 class Method(StrEnum):
     GET = "GET"
@@ -10,24 +9,38 @@ class Method(StrEnum):
     PATCH = "PATCH"
     DELETE = "DELETE"
 
-class AgentRequest(BaseModel):
-    model_id:str
-    user_input:str
-
 class API:
+    """
+    Note:
+        calling api:
+            - memory: access_token
+            - agent: no access_token
+    """
     _memory_server = "http://memory:8001"
     _agent_server = "http://agent:8002"
+    _time_out = httpx.Timeout(20.0, read=60.0) # connect, read
+    def __init__(self, access_token:str):
+        self.access_token = access_token
 
-    @staticmethod
-    def memory(endpoint:str, method:Method, content:Any):
+    def pack_params(self, url:str, method:Method, content:Any)->dict:
+        params = dict(url=url, method=method)
+        if method != Method.GET:
+            params.update(dict(json=content))
+        return params
+
+    async def memory(self, endpoint:str, method:Method, data:Any=None):
         base_url = API._memory_server
-        url = base_url + endpoint
+        url = f"{base_url}/{endpoint}"
+        params = self.pack_params(url, method, data)
+        params.update(dict(headers={"Authorization": f"Bearer {self.access_token}"}))
+        async with httpx.AsyncClient(timeout=self._time_out) as client:
+            response = await client.request(**params)
+            return response.json()
 
-    @staticmethod
-    def agent(agent_name:str, method:Method, json_data:AgentRequest):
+    async def agent(self, endpoint, method:Method, data:Any):
         base_url = API._agent_server
-        url = f"{base_url}/agent/{agent_name}"
-        
-        with httpx.Client() as client:
-            response = client.request(method, url=url, json=json_data.model_dump())
-            return response
+        url = f"{base_url}{endpoint}" 
+        params = self.pack_params(url, method, data)
+        async with httpx.AsyncClient(timeout=self._time_out) as client:
+            response = await client.request(**params)
+            return response.json()
