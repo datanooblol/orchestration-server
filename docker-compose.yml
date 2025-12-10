@@ -1,0 +1,23 @@
+services:
+  orchestration:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-southeast-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    volumes:
+      - ~/.aws:/root/.aws:ro
+      - ./app:/app
+    command: >
+      sh -c "
+      uv sync --directory /app && 
+      uv run --directory /app main.py
+      "    
+    networks:
+      - microservices-network
+
+networks:
+  microservices-network:
+    external: true
