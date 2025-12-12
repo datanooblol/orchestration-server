@@ -39,7 +39,7 @@ class API:
 
     async def agent(self, endpoint, method:Method, data:Any):
         base_url = API._agent_server
-        url = f"{base_url}{endpoint}" 
+        url = f"{base_url}/{endpoint}" 
         params = self.pack_params(url, method, data)
         async with httpx.AsyncClient(timeout=self._time_out) as client:
             response = await client.request(**params)

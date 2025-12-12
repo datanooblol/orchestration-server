@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Any, List, Dict, Optional
 import logging
 from pathlib import Path
+import json
 
 class ChatRequest(BaseModel):
     project_id:str
@@ -43,7 +44,7 @@ class ConvoFlow:
         return ""
 
     async def answer(self, data, talk_to_data):
-        endpoint = "/agent/chat-with-data" if talk_to_data else "/agent/chat"
+        endpoint = "agent/chat-with-data" if talk_to_data else "agent/chat"
         response = await self.api.agent(endpoint, Method.POST, data=data)
         return response
 
@@ -57,15 +58,33 @@ class ConvoFlow:
             metadata_context.append(extract_metadata(metadata))
         return files, "\n".join(["METADATAS:"]+metadata_context+[""])
         
+    async def process_talk_to_data(self, project_id, content):
+        files, metadata_context = await self.get_metadata_context(project_id)
+        query = await self.api.agent("agent/sql-generator", Method.POST, data=dict(model_id="nova-micro", content=metadata_context+content))
+        query = query.get("content", None)
+        query_data = await self.api.memory("source/query", Method.POST, data=dict(files=files, query=query))
+        query_data = query_data.get("data", None)
+        self.logger.debug(f"QUERY DATA: \n{query_data}")
+        return query, query_data
 
-    async def end_assistant_convo(self, chat_session_id, content, references):
+    async def end_assistant_convo(self, chat_session_id, content, references:Optional[dict]=None):
         params = {
             "endpoint": f"conversation/chat-session/{chat_session_id}",
             "method": Method.POST,
-            "data": dict(content=content, role="assistant", references=references),
+            "data": dict(content=content, role="assistant", references=None),
         }
         convo_id = await self.api.memory(**params)
         convo_id = convo_id['convo_id']
+        if references:
+            sql_code_reference = await self.api.memory(f"reference/conversation/{convo_id}", Method.POST, data=dict(type="sql_code", content=references['sql_code']))
+            self.logger.debug(f"SQL CODE: {sql_code_reference}")
+            sql_data_reference = await self.api.memory(f"reference/conversation/{convo_id}", Method.POST, data=dict(type="sql_data", content=references['sql_data']))
+            self.logger.debug(f"SQL DATA: {sql_data_reference}")
+            reference_data = [
+                sql_code_reference, 
+                sql_data_reference
+            ]
+            await self.api.memory(f"conversation/{convo_id}/references", Method.PATCH, data=dict(references=reference_data))
         response = await self.api.memory(f"conversation/{convo_id}", Method.GET)
         return response
 
@@ -73,19 +92,19 @@ class ConvoFlow:
         project_id = convo.project_id
         chat_session_id = convo.chat_session_id
         query_result = ""
+        references = None
         user_convo_id = await self.start_user_convo(chat_session_id=chat_session_id, content=convo.content)
         chat_history = await self.get_chat_history(chat_session_id=chat_session_id)
         self.logger.debug(chat_history)
         if convo.talk_to_data:
-            files, metadata_context = await self.get_metadata_context(project_id)
-            query = await self.api.agent("/agent/sql-generator", Method.POST, data=dict(model_id="nova-micro", content=metadata_context+convo.content))
-            query = query.get("content", None)
-            query_result = await self.api.memory("source/query", Method.POST, data=dict(files=files, query=query))
-            query_result = f"DATA:\n{query_result}\n"
+            query, query_data = await self.process_talk_to_data(project_id=project_id, content=convo.content)
+            references = dict(sql_code=query, sql_data=query_data)
+            self.logger.debug(f"References: {references}")
+            query_result = f"DATA:\n{query_data}\n"
         data = dict(model_id=convo.model_id, content=chat_history+query_result+convo.content)
         self.logger.debug(data)
         response = await self.answer(data, convo.talk_to_data)
-        ai_convo = await self.end_assistant_convo(chat_session_id, response['content'], None)
+        ai_convo = await self.end_assistant_convo(chat_session_id, response['content'], references)
         return ai_convo
     
 def extract_metadata(metadata_dict:dict):
