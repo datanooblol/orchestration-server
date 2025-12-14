@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Any, List, Dict, Optional
 import logging
 from pathlib import Path
+import json
 
 class ChatRequest(BaseModel):
     project_id:str
@@ -25,6 +26,10 @@ class ConvoFlow:
     async def get_last_convo(self, chat_session_id):
         response = await self.api.memory(f"conversation/chat-session/{chat_session_id}/latest", Method.GET)
         return response[0]
+
+    async def get_reference_by_id(self, reference_id):
+        response = await self.api.memory(f"reference/{reference_id}", Method.GET)
+        return response
 
     async def delete_convo(self, convo_id):
         response = await self.api.memory(f"conversation/{convo_id}", Method.DELETE)
@@ -87,9 +92,23 @@ class ConvoFlow:
         query = await self.api.agent("agent/sql-generator", Method.POST, data=dict(model_id="nova-micro", content=metadata_context+content))
         query = query.get("content", None)
         query_data = await self.api.memory("source/query", Method.POST, data=dict(files=files, query=query))
-        query_data = query_data.get("data", None)
+        data_markdown = query_data.get("markdown", None)
+        data_str = query_data.get("data", None)
         self.logger.debug(f"QUERY DATA: \n{query_data}")
-        return query, query_data
+        return query, data_str, data_markdown
+
+    async def visualize(self, convo_id, content, data, references):
+        content = f"DATA:\n\n{data}\n\nCONTENT:\n\n{content}"
+        data = dict(model_id="nova-micro", content=content)
+        response = await self.api.agent("agent/plotly-data-generator", Method.POST, data=data)
+        plotly_data = response.get("content", None)
+        plotly_data_reference = await self.api.memory(f"reference/conversation/{convo_id}", Method.POST, data=dict(type="plotly_data", content=json.dumps(plotly_data)))
+        reference_id = plotly_data_reference.get("reference_id", None)
+        references = [r for r in references if r.get("type")!='plotly_data']
+        references.append(plotly_data_reference)
+        await self.api.memory(f"conversation/{convo_id}/references", Method.PATCH, data=dict(references=references))
+        reference = await self.api.memory(f"reference/{reference_id}", Method.GET)
+        return reference
 
     async def end_assistant_convo(self, chat_session_id, content, references:Optional[dict]=None):
         params = {
@@ -117,10 +136,10 @@ class ConvoFlow:
         references = None
         self.logger.debug(chat_history)
         if talk_to_data:
-            query, query_data = await self.process_talk_to_data(project_id=project_id, content=content)
-            references = dict(sql_code=query, sql_data=query_data)
+            query, data_str, data_markdown = await self.process_talk_to_data(project_id=project_id, content=content)
+            references = dict(sql_code=query, sql_data=data_str)
             self.logger.debug(f"References: {references}")
-            query_result = f"DATA:\n{query_data}\n"
+            query_result = f"DATA:\n{data_markdown}\n"
         data = dict(model_id=model_id, content=chat_history+query_result+content)
         self.logger.debug(data)
         response = await self.answer(data, talk_to_data)

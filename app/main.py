@@ -2,13 +2,15 @@ from package.utils import setup_logger
 import logging
 setup_logger(logging.DEBUG)
 
+api_logger = logging.getLogger("API")
+
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from package.flows.conversation_flow import ConvoFlow, ChatRequest
 from package.services.api import API
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Any
 from datetime import datetime
 
 app = FastAPI(title="Orchestration Service")
@@ -40,6 +42,14 @@ class ConversationResponse(BaseModel):
     role: str
     content: str
     references: Optional[List[Reference]] = None
+
+class ReferenceResponse(BaseModel):
+    created_at: datetime
+    updated_at: datetime
+    reference_id: str
+    convo_id: str
+    type: str
+    content: Any
 
 @app.post("/chat", response_model=ConversationResponse)
 async def chat(
@@ -95,11 +105,22 @@ async def regenerate_response(
     ai_convo = await flow.end_assistant_convo(chat_data.chat_session_id, response['content'], references)
     return ai_convo
 
-@app.post("/visualize/{convo_id}")
+@app.post("/visualize/{convo_id}", response_model=ReferenceResponse)
 async def visualize(
+    convo_id:str,
     access_token:str = Depends(verify_and_extract_token)
 ):
-    pass
+    api = API(access_token=access_token)
+    flow = ConvoFlow(api=api)
+    convo = await flow.get_convo(convo_id)
+    content = convo.get("content", None)
+    references = convo.get("references", None)
+    reference_id = [r['reference_id'] for r in references if r['type']=="sql_data"]
+    sql_data = await flow.get_reference_by_id(reference_id[0])
+    data = sql_data.get("content", None)
+    api_logger.debug(f"DATA ({type(data)}): {data}")
+    reference = await flow.visualize(convo_id, content, data, references)
+    return reference
 
 @app.get("/health")
 async def health_check():
