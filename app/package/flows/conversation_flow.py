@@ -3,13 +3,12 @@ from pydantic import BaseModel
 from typing import Any, List, Dict, Optional
 import logging
 from pathlib import Path
-import json
 
 class ChatRequest(BaseModel):
     project_id:str
     chat_session_id:str
-    model_id:str
-    content:str
+    model_id:str = "nova-micro"
+    content:str = ""
     talk_to_data:bool = False
 
 class ChatResponse(BaseModel):
@@ -23,7 +22,19 @@ class ConvoFlow:
         self.api = api
         self.logger = logging.getLogger("Conversation Flow")
 
-    async def start_user_convo(self, chat_session_id, content):
+    async def get_last_convo(self, chat_session_id):
+        response = await self.api.memory(f"conversation/chat-session/{chat_session_id}/latest", Method.GET)
+        return response[0]
+
+    async def delete_convo(self, convo_id):
+        response = await self.api.memory(f"conversation/{convo_id}", Method.DELETE)
+        return response
+
+    async def get_convo(self, convo_id):
+        response = await self.api.memory(f"conversation/{convo_id}", Method.GET)
+        return response
+
+    async def create_user_convo(self, chat_session_id, content):
         """
         - save user convo
         """
@@ -33,10 +44,23 @@ class ConvoFlow:
             "data": dict(content=content, role="user"),
         }
         response = await self.api.memory(**params)
-        return response
+        convo_id = response.get("convo_id", None)
+        convo = await self.get_convo(convo_id)
+        return convo
+
+    async def patch_user_convo_content(self, convo_id, content):
+        params = {
+            "endpoint": f"conversation/{convo_id}",
+            "method": Method.PUT,
+            "data": dict(content=content, role="user"),
+        }
+        response = await self.api.memory(**params)
+        convo = await self.get_convo(convo_id)
+        return convo
 
     async def get_chat_history(self, chat_session_id:str):
         response = await self.api.memory(f"conversation/chat-session/{chat_session_id}", method=Method.GET)
+        # chat
         if len(response)>1:
             _ = response.pop()
             chat_history = ["CHAT_HISTORY:\n"] + [f"{r['role'].upper()}:\n{r['content']}\n" for r in response]
@@ -88,25 +112,20 @@ class ConvoFlow:
         response = await self.api.memory(f"conversation/{convo_id}", Method.GET)
         return response
 
-    async def run(self, convo:ChatRequest):
-        project_id = convo.project_id
-        chat_session_id = convo.chat_session_id
+    async def run(self, project_id, model_id, content, chat_history, talk_to_data:bool):
         query_result = ""
         references = None
-        user_convo_id = await self.start_user_convo(chat_session_id=chat_session_id, content=convo.content)
-        chat_history = await self.get_chat_history(chat_session_id=chat_session_id)
         self.logger.debug(chat_history)
-        if convo.talk_to_data:
-            query, query_data = await self.process_talk_to_data(project_id=project_id, content=convo.content)
+        if talk_to_data:
+            query, query_data = await self.process_talk_to_data(project_id=project_id, content=content)
             references = dict(sql_code=query, sql_data=query_data)
             self.logger.debug(f"References: {references}")
             query_result = f"DATA:\n{query_data}\n"
-        data = dict(model_id=convo.model_id, content=chat_history+query_result+convo.content)
+        data = dict(model_id=model_id, content=chat_history+query_result+content)
         self.logger.debug(data)
-        response = await self.answer(data, convo.talk_to_data)
-        ai_convo = await self.end_assistant_convo(chat_session_id, response['content'], references)
-        return ai_convo
-    
+        response = await self.answer(data, talk_to_data)
+        return response, references
+
 def extract_metadata(metadata_dict:dict):
     metadata = metadata_dict.get("metadata", {})
     table_name = metadata.get("table_name", None)
