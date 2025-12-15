@@ -105,7 +105,7 @@ async def regenerate_response(
     ai_convo = await flow.end_assistant_convo(chat_data.chat_session_id, response['content'], references)
     return ai_convo
 
-@app.post("/visualize/{convo_id}", response_model=ReferenceResponse)
+@app.get("/visualize/{convo_id}", response_model=ReferenceResponse)
 async def visualize(
     convo_id:str,
     access_token:str = Depends(verify_and_extract_token)
